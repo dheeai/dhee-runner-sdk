@@ -1,13 +1,15 @@
 name: Release
 
-# Publish to npm when a version tag is pushed (e.g. v0.1.1).
+# Publish to npm via OIDC Trusted Publishing when a version tag is pushed (e.g. v0.1.1).
+# No NPM_TOKEN secret — auth is a short-lived OIDC token verified against the
+# package's trusted-publisher config on npmjs.com.
 on:
   push:
     tags: ['v*']
 
 permissions:
   contents: read
-  id-token: write   # required for npm provenance attestation
+  id-token: write   # mint the OIDC token for trusted publishing + provenance
 
 jobs:
   publish:
@@ -18,9 +20,9 @@ jobs:
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
+      - name: Upgrade npm (trusted publishing needs npm >= 11.5.1)
+        run: npm install -g npm@latest
       - name: Install (runs build via prepare)
         run: npm install
-      - name: Publish
+      - name: Publish (OIDC trusted publishing)
         run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
