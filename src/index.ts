@@ -1,5 +1,5 @@
 /**
- * @dheeai/runner-sdk — the public surface a Dhee runner (and bundle author)
+ * @dhee_ai/runner-sdk — the public surface a Dhee runner (and bundle author)
  * builds against. A published runner depends on ONLY this package, never
  * on kshana-core internals (enforced by the runner-sdk firewall test).
  *
@@ -44,3 +44,15 @@ export { defineRunner } from './defineRunner.js';
 export { isTransientError, retryTransient, type RetryOpts } from './transientRetry.js';
 export { resolveEndpointUrl } from './endpointResolver.js';
 export { computeInputsHash, type FileInputRef, type InputsHashKey } from './inputsHash.js';
+export {
+  buildComfyAuthHeaders,
+  isComfyCloudUrl,
+  readComfyApiKey,
+  useBearerComfyAuth,
+} from './comfyAuth.js';
+export {
+  ComfyClient,
+  type ComfyClientOptions,
+  type ComfyOutput,
+  type RunOpts as ComfyRunOpts,
+} from './comfyClient.js';
