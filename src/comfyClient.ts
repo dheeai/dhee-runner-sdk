@@ -147,6 +147,54 @@ export class ComfyClient {
   }
 
   /**
+   * Comfy Cloud only: fetch a job's execution exception (the REAL reason a
+   * graph failed — missing model, foreign lora_name, malformed input, OOM)
+   * from the full `/job/<id>` body. `/job/<id>/status` carries only a coarse
+   * status string; the exception lives on the full job record. Returns a
+   * single human-readable line ("Type — message — node=N") or null.
+   *
+   * This unmasks the recurring "no outputs / timed out" failure: a cloud
+   * execution_error used to look identical to a silent workflow or a slow
+   * cold-start, so the root cause (almost always a wrong model filename for
+   * cloud) was never surfaced to the user.
+   */
+  private async getCloudJobError(
+    promptId: string,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
+    try {
+      const res = await this.request(`/job/${promptId}`, { signal });
+      if (!res.ok) return null;
+      const body = (await res.json()) as Record<string, unknown>;
+      const ex =
+        body['exception'] && typeof body['exception'] === 'object'
+          ? (body['exception'] as Record<string, unknown>)
+          : null;
+      const errNested =
+        body['error'] && typeof body['error'] === 'object'
+          ? (body['error'] as Record<string, unknown>)
+          : null;
+      const pick = (key: string, from?: Record<string, unknown> | null): string | undefined => {
+        const src = from ?? body;
+        const v = src[key];
+        return typeof v === 'string' && v.trim() ? v.trim() : undefined;
+      };
+      const type =
+        pick('exception_type', ex) ?? pick('type', errNested);
+      const msg =
+        pick('exception_message', ex) ?? pick('message', errNested);
+      const node = pick('node_id', ex) ?? pick('node', errNested);
+      const parts: string[] = [];
+      if (type) parts.push(type);
+      if (msg) parts.push(msg);
+      if (node) parts.push(`node=${node}`);
+      return parts.length > 0 ? parts.join(' — ') : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * After cloud reports completion, resolve output files. history_v2 can lag
    * the status endpoint significantly — observed 30–120s+ in the dhee-website
    * proxy logs when Comfy Cloud is under load — so re-fetch for a generous
@@ -191,7 +239,10 @@ export class ComfyClient {
         }
         const status = await this.getCloudJobStatus(promptId, opts.signal);
         if (status === 'failed' || status === 'cancelled' || status === 'error') {
-          throw new Error(`workflow ${status} for prompt ${promptId}`);
+          const detail = await this.getCloudJobError(promptId, opts.signal);
+          throw new Error(
+            `workflow ${status} for prompt ${promptId}${detail ? `: ${detail}` : ''}`,
+          );
         }
         const historyDone =
           status === 'completed' ||
@@ -201,10 +252,19 @@ export class ComfyClient {
           entry?.status?.status_str === 'success';
         if (historyDone) {
           // Cloud can report completion a beat before the output files surface
-          // in history_v2 — retry for up to ~90s. If still empty, keep polling
-          // the main loop until the overall deadline (outputs can lag minutes).
+          // in history_v2 — retry for up to ~90s. If still empty, fetch the
+          // job's exception: a cloud graph that ERRORED at execution (e.g. a
+          // model not on cloud) is often reported as "completed" with no
+          // outputs. Surfacing the exception here stops the runner from
+          // polling silently until the 10-min timeout (which masked the real
+          // cause). Only keep polling the outer loop when there is NO
+          // exception (genuine slow history population).
           const outs = await this.resolveCloudOutputs(promptId, entry, opts);
           if (outs.length > 0) return outs;
+          const detail = await this.getCloudJobError(promptId, opts.signal);
+          if (detail) {
+            throw new Error(`workflow completed with no outputs: ${detail}`);
+          }
         }
       } else {
         const entry = await this.fetchHistoryEntry(promptId, opts.signal);

@@ -43,6 +43,7 @@ export type {
 export { defineRunner } from './defineRunner.js';
 export { isTransientError, retryTransient, type RetryOpts } from './transientRetry.js';
 export { resolveEndpointUrl } from './endpointResolver.js';
+export { resolveWorkflowPath, isCloudEndpoint, type ResolveWorkflowPathOpts } from './workflowPath.js';
 export { computeInputsHash, type FileInputRef, type InputsHashKey } from './inputsHash.js';
 export {
   buildComfyAuthHeaders,
