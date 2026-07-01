@@ -30,6 +30,8 @@ export interface RunOpts {
   timeoutMs?: number;
   /** Poll interval (ms). Default 1500. */
   pollMs?: number;
+  /** Optional Dhee workflow id passed through Comfy extra_data for metering. */
+  workflowId?: string;
 }
 
 interface HistoryEntry {
@@ -106,11 +108,23 @@ export class ComfyClient {
     return { name: json.name };
   }
 
-  async queuePrompt(workflow: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
+  async queuePrompt(
+    workflow: Record<string, unknown>,
+    signal?: AbortSignal,
+    workflowId?: string,
+  ): Promise<string> {
+    const body: Record<string, unknown> = { prompt: workflow, client_id: this.clientId };
+    if (workflowId) {
+      body['extra_data'] = {
+        dhee_workflow_id: workflowId,
+        workflowId,
+        dhee: { workflowId },
+      };
+    }
     const res = await this.request('/prompt', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: workflow, client_id: this.clientId }),
+      body: JSON.stringify(body),
       signal,
     });
     if (!res.ok) await throwComfyHttpError(res, '/prompt failed');
@@ -298,7 +312,7 @@ export class ComfyClient {
   }
 
   async run(workflow: Record<string, unknown>, opts: RunOpts = {}): Promise<ComfyOutput[]> {
-    const promptId = await this.queuePrompt(workflow, opts.signal);
+    const promptId = await this.queuePrompt(workflow, opts.signal, opts.workflowId);
     return this.waitForOutputs(promptId, opts);
   }
 }
