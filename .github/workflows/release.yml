@@ -18,7 +18,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 22, not 20: `npm install -g npm@latest` below now resolves npm@12,
+          # which declares `node: ^22.22.2 || ^24.15.0 || >=26.0.0` and fails
+          # EBADENGINE on Node 20. The published package still supports Node
+          # >=20 (see `engines`) — this is only the publishing toolchain, and
+          # CI is what validates the supported runtime floor.
+          node-version: 22
           registry-url: https://registry.npmjs.org
       - name: Upgrade npm (trusted publishing needs npm >= 11.5.1)
         run: npm install -g npm@latest
