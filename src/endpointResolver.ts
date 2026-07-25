@@ -38,8 +38,16 @@ export function resolveEndpointUrl(endpointName: string): string | null {
     return null;
   }
 
-  // Cloud mode (or anything non-'local'): honor the bundle's label.
+  // Cloud mode (or anything non-'local'): honor the bundle's label, falling
+  // back to COMFYUI_BASE_URL when the specific ENDPOINT_<name> is unset —
+  // symmetric with the local branch above. Without the fallback every bundle
+  // endpoint label (self.public, public.cloud, …) needs its own explicit
+  // ENDPOINT_<label> var, so adding a new label silently breaks cloud routing
+  // until the operator notices.
   const envKey = `ENDPOINT_${endpointName.replace(/\./g, '_')}`;
   const url = process.env[envKey];
-  return isMeaningful(url) ? url.trim() : null;
+  if (isMeaningful(url)) return url.trim();
+  const baseUrl = process.env['COMFYUI_BASE_URL'];
+  if (isMeaningful(baseUrl)) return baseUrl.trim();
+  return null;
 }

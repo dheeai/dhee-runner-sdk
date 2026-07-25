@@ -17,7 +17,38 @@ npm install @dheeai/runner-sdk
 - **`retryTransient(fn, opts)` / `isTransientError(e)`** — retry network/Comfy calls with backoff + abort support.
 - **`computeInputsHash(key)`** — content-addressed cache key for a node's inputs.
 - **`ffmpegBin()` / `ffprobeBin()`** — resolve the ffmpeg / ffprobe executable to spawn. See below.
+- **`ComfyClient`** — queue a workflow, poll for completion, download outputs. Handles local ComfyUI *and* Comfy Cloud (auth scheme, `/api` path prefix, `history_v2`, and the lagging-history + `execution_error` cases that otherwise look like a silent timeout).
+- **`pruneAndRedirect()` / `injectParameter()`** — pure Comfy workflow-graph edits: drop optional nodes and transitively repoint their consumers; set a value at a node/field with an actionable error when the node is gone.
+- **`resolveWorkflowPath()` / `isCloudEndpoint()`** — pick a `_cloud.json` workflow variant when the endpoint is Comfy Cloud, so a runner doesn't ship local model filenames to cloud.
+- **`buildComfyAuthHeaders()`** and friends — Bearer for the dhee proxy, `X-API-Key` for `cloud.comfy.org`, nothing locally.
 - The canonical **types**: `Runner`, `RunnerContext`, `RunnerDescription`, `RunnerManifest`, `RunnerResult`, `RunnerArtifact`, `DagBundle`, `NodeDef`, and the bundle/LLM-access types.
+
+## Driving a Comfy workflow
+
+```ts
+import {
+  ComfyClient, resolveEndpointUrl, resolveWorkflowPath, pruneAndRedirect, injectParameter,
+} from '@dheeai/runner-sdk';
+
+const endpointUrl = resolveEndpointUrl(cfg.endpoint ?? 'self.local');
+if (!endpointUrl) return { ok: false, error: 'no Comfy endpoint configured' };
+
+// Cloud-aware: prefers foo_cloud.json when endpointUrl is Comfy Cloud.
+const wfPath = resolveWorkflowPath({ workflowPath: cfg.workflowPath, bundleDir: ctx.bundleDir, endpointUrl });
+const workflow = JSON.parse(await readFile(wfPath, 'utf-8'));
+
+const client = new ComfyClient(endpointUrl);
+const { name } = await client.uploadFile(inputImagePath);
+injectParameter(workflow, { nodeId: '1', field: 'image' }, name);
+
+// Optional inputs absent? Drop their nodes; consumers fall back transitively.
+pruneAndRedirect(workflow, { deleteNodes: ['3', '13'], redirects: [{ from: '13', to: '12' }] });
+
+const outs = await client.run(workflow, { signal: ctx.signal });
+await client.download(outs[0], outputAbsPath);
+```
+
+Don't hand-write a Comfy client per runner — that is how the plumbing drifted across packages in the first place.
 
 ## Spawning ffmpeg
 

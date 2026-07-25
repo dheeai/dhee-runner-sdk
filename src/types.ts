@@ -114,6 +114,12 @@ export interface NodeDef {
    */
   itemKey?: string;
   /**
+   * For optional collections whose source array can legitimately be
+   * empty. When true, the walker materializes zero instances instead
+   * of treating an empty source array as malformed upstream output.
+   */
+  allowEmptyItems?: boolean;
+  /**
    * For collections that may need to subdivide their items to fit
    * runner constraints. The walker calls a chunker matching this spec
    * during materialization and produces one node instance per chunk.

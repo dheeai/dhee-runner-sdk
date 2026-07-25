@@ -51,3 +51,28 @@ export {
   toUnpackedPath,
   type BinResolverDeps,
 } from './ffmpegBin.js';
+export {
+  buildComfyAuthHeaders,
+  isComfyCloudUrl,
+  readComfyApiKey,
+  requireComfyApiKeyForCloud,
+  useBearerComfyAuth,
+} from './comfyAuth.js';
+export {
+  ComfyClient,
+  type ComfyClientOptions,
+  type ComfyOutput,
+  type RunOpts as ComfyRunOpts,
+} from './comfyClient.js';
+export {
+  isCloudEndpoint,
+  resolveWorkflowPath,
+  type ResolveWorkflowPathOpts,
+} from './workflowPath.js';
+export {
+  injectParameter,
+  pruneAndRedirect,
+  type ComfyParameterMapping,
+  type ComfyWorkflow,
+  type PruneSpec,
+} from './comfyGraph.js';
