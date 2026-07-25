@@ -76,3 +76,18 @@ export {
   type ComfyWorkflow,
   type PruneSpec,
 } from './comfyGraph.js';
+export {
+  aliasEndpointKey,
+  applyAliases,
+  applyEndpointAliases,
+  defaultAliasesDir,
+  endpointSlug,
+  readAliases,
+  validateClassSwaps,
+  writeAliases,
+  type ApplyAliasesOpts,
+  type ApplyEndpointAliasesOpts,
+  type ApplyEndpointAliasesResult,
+  type ClassSwapProblem,
+  type WorkflowAliases,
+} from './workflowAliases.js';

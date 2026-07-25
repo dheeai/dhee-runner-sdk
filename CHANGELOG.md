@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.0
+
+### Added
+
+- **`workflowAliases`** — the per-endpoint alias store, ported from dhee-core: `readAliases`, `writeAliases`, `applyAliases`, `applyEndpointAliases`, `validateClassSwaps`, `aliasEndpointKey`, `endpointSlug`, `defaultAliasesDir`.
+
+  This is the missing piece that actually blocked externalizing the `comfy.*` runners, and it is not optional. A bundle ships a CANONICAL workflow naming the model files its author had; the operator's box usually has different ones. The alias store reconciles them. Concretely, on this dev box the live store rewrites `qwen_image_edit_2511_bf16.safetensors` → `Qwen-Image-Edit-2511-FP8_e4m3fn.safetensors` — so an externalized `comfy.qwen_edit_chain` *without* alias support would hand Comfy a filename that box does not have, and the render would fail on a missing model.
+
+  Verified equivalent to dhee-core's implementation against the **real** alias store: identical endpoint keys, slugs and loaded aliases across local/cloud/proxy endpoints, and a byte-identical rewritten graph on the real `qwen_edit_multi.json`.
+
+  Note the keying design, which the tests pin: every non-cloud URL collapses to one stable `self.local` key, so a tailnet rename or a LAN-IP change does not orphan the operator's model substitutions. Cloud endpoints stay keyed per host, because separate accounts have separate model libraries.
+
+### Fixed
+
+- **The `/object_info` probe is now bounded.** It was a bare `fetch` with no timeout and no abort signal, so an unreachable or cold-starting endpoint stalled the caller indefinitely — and because the caller swallows the failure as "validation skipped", the stall was invisible. Now capped at 5s, and `applyEndpointAliases` accepts a `signal` that is threaded through, so a cancelled run cancels the probe. Validation is best-effort by design, so skipping the check beats holding up a render.
+
+- **Deduplicated `isCloudEndpoint`.** The ported module arrived with a byte-identical second copy of the predicate already in `workflowPath`. Two copies of the same rule is exactly the drift this package exists to prevent, so there is now one definition, re-exported.
+
+### Tests
+
+104 (up from 82) — 22 new, covering endpoint keying and the `self.local` collapse, store round-trip and malformed-store tolerance, model renames including the no-mutation contract, class-swap validation (missing class and unsatisfied required inputs), and `applyEndpointAliases`: that a rename-only store never touches the network, that the abort signal reaches the probe, and that a failed probe degrades rather than blocking.
+
 ## 0.3.0
 
 Reconciles the SDK fork. `@dheeai` is now the canonical scope; `@dhee_ai/runner-sdk@0.1.5` had a Comfy kit that no consumer depended on, while `@dheeai` had the consumers and no kit. This release brings the kit onto the canonical scope, so one package has the whole surface. See #6.
