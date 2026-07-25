@@ -13,6 +13,8 @@
  * to v2/v3 when the bundle layer eventually replaces DependencyGraphExecutor.
  */
 
+import type { InputsHashKey } from './inputsHash.js';
+
 export type NodeKind = 'stage' | 'collection';
 
 export type InputUsage = 'context' | 'reference' | 'input' | 'aggregate';
@@ -571,6 +573,74 @@ export interface RunnerContext {
    * legacy callers / tests may omit it.
    */
   llm?: LLMAccess;
+  /**
+   * Content-addressed generation cache, injected by the walker. A runner that
+   * produces an expensive artifact (a GPU render, a paid API call) should
+   * `fetch` before working and `store` after.
+   *
+   * Optional, and a runner MUST stay correct without it — an absent cache means
+   * "recompute", never "fail". `enabled` is false when the operator disabled
+   * caching, so a runner can skip building a key at all.
+   */
+  cache?: GenerationCacheAccess;
+  /**
+   * Stable project identity + feature flags, injected by the walker. `cacheScope`
+   * is the value to put in an `InputsHashKey` so cache entries from different
+   * projects cannot collide.
+   */
+  project?: ProjectAccess;
+}
+
+/**
+ * Content-addressed cache access, injected as `ctx.cache`.
+ *
+ * Deliberately does NOT expose the store's own paths. A runner asks for a
+ * cached artifact to be placed at a destination it already owns, and hands over
+ * a file to be stored — it never learns where the CAS keeps things, so the
+ * engine stays free to change that (or make it remote) without breaking runners.
+ *
+ * Build the key with `computeInputsHash`'s `InputsHashKey`, using
+ * `ctx.project.cacheScope` so entries cannot collide across projects.
+ *
+ * Async by contract even though today's implementation is synchronous: a future
+ * shared or remote cache should not require a breaking change.
+ */
+export interface GenerationCacheAccess {
+  /**
+   * False when the operator has disabled caching. Check it before doing work to
+   * build a key — an honest `enabled` is cheaper than a guaranteed miss.
+   */
+  readonly enabled: boolean;
+  /**
+   * On hit, copy the cached artifact to `destAbsPath` and return its hash. On
+   * miss, return null and leave `destAbsPath` alone.
+   */
+  fetch(
+    key: InputsHashKey,
+    destAbsPath: string,
+  ): Promise<{ hash: string; metadata?: Record<string, unknown> } | null>;
+  /**
+   * Store the file at `sourceAbsPath` under `key`. Returns its hash, or null if
+   * the store failed — storing is best-effort and must never fail a run that
+   * already produced a good artifact.
+   */
+  store(
+    key: InputsHashKey,
+    sourceAbsPath: string,
+    opts?: { ext?: string; metadata?: Record<string, unknown> },
+  ): Promise<{ hash: string } | null>;
+}
+
+/** Project identity + feature flags, injected as `ctx.project`. */
+export interface ProjectAccess {
+  /**
+   * Stable per-project cache scope — the project's id, falling back to a
+   * normalized form of its directory. Put this in an `InputsHashKey` so two
+   * projects with identical inputs do not share cache entries.
+   */
+  readonly cacheScope: string;
+  /** Per-project feature flags, as resolved by the engine. */
+  readonly features: Readonly<Record<string, unknown>>;
 }
 
 /** A produced artifact, when a runner emits more than the primary output. */

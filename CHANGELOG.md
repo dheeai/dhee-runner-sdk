@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.5.0
+
+### Added
+
+- **`ctx.cache` (`GenerationCacheAccess`) and `ctx.project` (`ProjectAccess`)** — injected capabilities, mirroring how `ctx.llm` already works.
+
+  This is what lets an EXTERNALIZED runner keep content-addressed caching. Until now only in-core runners could reach `GenerationCache`, so moving one out silently cost it CAS dedup — a cost regression, not a refactor. `comfy.tti` alone is 65 node references across the bundles; re-paying for identical GPU renders on every re-walk is worse than leaving the runner in core.
+
+  The surface is deliberately narrow — `fetch(key, destAbsPath)` and `store(key, sourceAbsPath, opts)`:
+
+  - **It never exposes the store's own paths.** A runner asks for a cached artifact at a destination it already owns, and hands over a file to be stored. It never learns where the CAS keeps things, so the engine can relocate or remote the store without breaking runners.
+  - **`enabled`** is false when the operator disabled caching, so a runner can skip building a key rather than pay for a guaranteed miss.
+  - **Async by contract**, though today's implementation is synchronous, so a future shared or remote cache is not a breaking change.
+  - **`ProjectAccess.cacheScope`** goes into the `InputsHashKey` so two projects with identical inputs cannot share entries.
+
+  Both are optional and a runner MUST stay correct without them: an absent cache means *recompute*, never *fail*, and `store` returning null is best-effort — a full disk must not turn a good render into a failed node.
+
+### Fixed
+
+- **`npm run typecheck` now covers `test/`.** The test directory sat outside the tsconfig `include`, so test files were transpiled by vitest but never type-checked. A test in this release constructed an `InputsHashKey` without its required `config` field and passed anyway; a second tsconfig (`tsconfig.test.json`) catches that class of thing now.
+
+### Tests
+
+116 (up from 104) — 12 covering the degradation paths that make this safe to depend on: no cache injected, cache disabled, a failing `store`, per-project scoping, key sensitivity, and that `fetch` writes to the runner's chosen destination rather than a store path.
+
 ## 0.4.0
 
 ### Added
