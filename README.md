@@ -16,7 +16,34 @@ npm install @dheeai/runner-sdk
 - **`resolveEndpointUrl(name)`** — resolve a named endpoint (`self.local`, `self.cloud`, …) to its URL from the user's env (`ENDPOINT_<name>` / `COMFYUI_BASE_URL`). Keeps endpoint URLs out of bundles.
 - **`retryTransient(fn, opts)` / `isTransientError(e)`** — retry network/Comfy calls with backoff + abort support.
 - **`computeInputsHash(key)`** — content-addressed cache key for a node's inputs.
+- **`ffmpegBin()` / `ffprobeBin()`** — resolve the ffmpeg / ffprobe executable to spawn. See below.
 - The canonical **types**: `Runner`, `RunnerContext`, `RunnerDescription`, `RunnerManifest`, `RunnerResult`, `RunnerArtifact`, `DagBundle`, `NodeDef`, and the bundle/LLM-access types.
+
+## Spawning ffmpeg
+
+**Never spawn a bare `'ffmpeg'`.** It assumes a system ffmpeg on `PATH`, which does not exist on a clean Windows box, in CI without ffmpeg installed, or inside a macOS GUI app that never inherited the shell `PATH`. The failure is `spawn ffmpeg ENOENT` at render time — on someone else's machine.
+
+Use the resolver instead:
+
+```ts
+import { ffmpegBin, ffprobeBin } from '@dheeai/runner-sdk';
+
+spawn(ffmpegBin(), ['-i', input, ...args]);
+```
+
+Resolution order:
+
+1. `dhee_FFMPEG_PATH` / `dhee_FFPROBE_PATH` env override — lets a host (the desktop) or a power user pin a specific binary.
+2. The bundled installer binary, `chmod +x`'d if the package manager stripped execute bits, and rewritten from `app.asar` to `app.asar.unpacked` when running inside a packaged Electron app.
+3. Bare `ffmpeg` / `ffprobe` on `PATH`.
+
+**If your runner spawns ffmpeg, add the binaries to your own dependencies** so step 2 can fire:
+
+```sh
+npm install @ffmpeg-installer/ffmpeg @ffprobe-installer/ffprobe
+```
+
+They are declared here as *optional* peer dependencies: the SDK provides the resolver, your runner provides the binaries. That way a runner that never touches ffmpeg doesn't pay for ~80 MB of platform binaries, and one that does gets a real executable on every platform.
 
 ## Minimal runner
 

@@ -44,3 +44,10 @@ export { defineRunner } from './defineRunner.js';
 export { isTransientError, retryTransient, type RetryOpts } from './transientRetry.js';
 export { resolveEndpointUrl } from './endpointResolver.js';
 export { computeInputsHash, type FileInputRef, type InputsHashKey } from './inputsHash.js';
+export {
+  ffmpegBin,
+  ffprobeBin,
+  resolveBin,
+  toUnpackedPath,
+  type BinResolverDeps,
+} from './ffmpegBin.js';

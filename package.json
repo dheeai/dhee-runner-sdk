@@ -1,7 +1,7 @@
 {
   "name": "@dheeai/runner-sdk",
-  "version": "0.1.1",
-  "description": "Authoring SDK for Dhee runners & bundles \u2014 the firewall a runner depends on.",
+  "version": "0.2.0",
+  "description": "Authoring SDK for Dhee runners & bundles — the firewall a runner depends on.",
   "type": "module",
   "license": "Apache-2.0",
   "homepage": "https://github.com/dheeai/dhee-runner-sdk#readme",
@@ -28,6 +28,7 @@
     }
   },
   "files": [
+    "CHANGELOG.md",
     "dist",
     "LICENSE",
     "README.md"
@@ -35,13 +36,29 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepare": "npm run build",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
   },
   "engines": {
     "node": ">=20.0.0"
   },
+  "peerDependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@ffprobe-installer/ffprobe": "^2.1.2"
+  },
+  "peerDependenciesMeta": {
+    "@ffmpeg-installer/ffmpeg": {
+      "optional": true
+    },
+    "@ffprobe-installer/ffprobe": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@ffprobe-installer/ffprobe": "^2.1.2",
     "@types/node": "^22.15.29",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.6"
   }
 }
