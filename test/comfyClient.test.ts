@@ -341,3 +341,48 @@ describe('download', () => {
     ).rejects.toThrow(/downloaded file was empty/);
   });
 });
+
+describe('a hung connection cannot stall the poll forever', () => {
+  it('a history request that never settles is treated as a missed beat, and the next poll wins', async () => {
+    // Measured 2026-09-02: an H3 render completed on the box and wrote its
+    // mp4 while the runner sat on two ESTABLISHED sockets at 0.2% CPU. The
+    // gateway had swapped GPU backends mid-render and stopped serving that
+    // connection; with no per-request deadline, `fetch` never settled and the
+    // poll waited on a job that had already succeeded.
+    const done = {
+      'p1': {
+        status: { status_str: 'success', completed: true },
+        outputs: { '9': { images: [{ filename: 'scene01.mp4', subfolder: 'h3', type: 'output' }] } },
+      },
+    };
+    let attempt = 0;
+    globalThis.fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      attempt += 1;
+      if (attempt === 1) {
+        // never settles on its own — only the request deadline ends it
+        return await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        });
+      }
+      return new Response(JSON.stringify(done), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const client = new ComfyClient('http://box:9000/comfyui');
+    const outs = await client.waitForOutputs('p1', { timeoutMs: 20_000, pollMs: 10, requestTimeoutMs: 50 });
+    expect(outs).toEqual([{ filename: 'scene01.mp4', subfolder: 'h3', type: 'output' }]);
+    expect(attempt).toBeGreaterThan(1);
+  });
+
+  it("the caller's own cancellation still ends the wait rather than retrying", async () => {
+    const controller = new AbortController();
+    globalThis.fetch = vi.fn(async (_url: unknown, init?: RequestInit) =>
+      await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      })) as unknown as typeof globalThis.fetch;
+
+    const client = new ComfyClient('http://box:9000/comfyui');
+    const wait = client.waitForOutputs('p1', { timeoutMs: 20_000, pollMs: 10, signal: controller.signal });
+    controller.abort();
+    await expect(wait).rejects.toThrow();
+  });
+});

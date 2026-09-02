@@ -38,6 +38,12 @@ export interface RunOpts {
   timeoutMs?: number;
   /** Poll interval (ms). Default 1500. */
   pollMs?: number;
+  /**
+   * Deadline for a single poll request. A poll that exceeds it is treated as a
+   * missed beat and retried on a fresh connection, which is what rescues a
+   * wait sitting on a socket the server has stopped serving.
+   */
+  requestTimeoutMs?: number;
   /** Optional Dhee workflow id passed through Comfy extra_data for metering. */
   workflowId?: string;
 }
@@ -48,6 +54,47 @@ interface HistoryEntry {
 }
 
 const OUTPUT_KEYS = ['images', 'image', 'gifs', 'videos', 'video', 'audio'] as const;
+
+/**
+ * Deadline for a control-plane call (prompt, history, status). Generous enough
+ * that a busy gateway is never cut off mid-answer, short enough that a dead
+ * socket is noticed and retried on a fresh connection rather than held forever.
+ */
+const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+
+/** File transfers legitimately take far longer than a control-plane call. */
+const TRANSFER_REQUEST_TIMEOUT_MS = 30 * 60_000;
+
+/**
+ * Compose a caller's AbortSignal with a timeout. Returns the combined signal
+ * and a cancel() that MUST run in a finally, or the timer keeps the process
+ * alive past the request.
+ */
+function withTimeout(
+  caller: AbortSignal | undefined,
+  timeoutMs: number,
+): { signal: AbortSignal | undefined; cancel: () => void } {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return { signal: caller, cancel: () => {} };
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new Error(`request exceeded ${timeoutMs}ms`)),
+    timeoutMs,
+  );
+  const onCallerAbort = () => controller.abort(caller?.reason);
+  if (caller) {
+    if (caller.aborted) controller.abort(caller.reason);
+    else caller.addEventListener('abort', onCallerAbort, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    cancel: () => {
+      clearTimeout(timer);
+      caller?.removeEventListener('abort', onCallerAbort);
+    },
+  };
+}
 
 export class ComfyClient {
   private readonly baseUrl: string;
@@ -88,16 +135,36 @@ export class ComfyClient {
     return url.toString();
   }
 
+  /**
+   * Every request gets a deadline. Without one, a socket that is ESTABLISHED
+   * but no longer served — a gateway that swapped GPU backends mid-render, a
+   * proxy that dropped the peer without a FIN — makes `fetch` hang forever.
+   * The poll loop then waits on a request that will never settle while the
+   * job it is polling for has already succeeded, which is indistinguishable
+   * from a slow render and burns the whole timeout.
+   *
+   * Measured 2026-09-02: an H3 render completed on the box and wrote its mp4,
+   * while the runner sat on two ESTABLISHED sockets at 0.2% CPU with the
+   * gateway reporting nothing in flight. A fresh client resolved the same job
+   * instantly. The dead connection was the entire fault.
+   */
   private async request(
     pathname: string,
     init: RequestInit = {},
     searchParams?: URLSearchParams,
+    timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
   ): Promise<Response> {
     const extra = (init.headers ?? {}) as Record<string, string>;
-    return fetch(this.buildUrl(pathname, searchParams), {
-      ...init,
-      headers: { ...this.authHeaders(), ...extra },
-    });
+    const { signal, cancel } = withTimeout(init.signal ?? undefined, timeoutMs);
+    try {
+      return await fetch(this.buildUrl(pathname, searchParams), {
+        ...init,
+        ...(signal ? { signal } : {}),
+        headers: { ...this.authHeaders(), ...extra },
+      });
+    } finally {
+      cancel();
+    }
   }
 
   /** Upload a local file to Comfy's input store; returns the stored name. */
@@ -109,7 +176,7 @@ export class ComfyClient {
     form.append('image', new Blob([new Uint8Array(bytes)]), basename(absPath));
     form.append('type', type);
     form.append('overwrite', 'true');
-    const res = await this.request('/upload/image', { method: 'POST', body: form });
+    const res = await this.request('/upload/image', { method: 'POST', body: form }, undefined, TRANSFER_REQUEST_TIMEOUT_MS);
     if (!res.ok) await throwComfyHttpError(res, 'upload failed');
     const json = (await res.json()) as { name?: string };
     if (!json.name) throw new Error('upload response missing name');
@@ -149,9 +216,19 @@ export class ComfyClient {
   private async fetchHistoryEntry(
     promptId: string,
     signal?: AbortSignal,
+    requestTimeoutMs?: number,
   ): Promise<HistoryEntry | null> {
     const path = this.useCloudPaths ? `/history_v2/${promptId}` : `/history/${promptId}`;
-    const res = await this.request(path, { signal });
+    let res: Response;
+    try {
+      res = await this.request(path, { signal }, undefined, requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
+    } catch (e) {
+      // A poll that times out is a MISSED beat, not a failed job: the next
+      // iteration opens a fresh connection and usually answers immediately.
+      // Only the caller's own cancellation should end the wait.
+      if (signal?.aborted) throw e;
+      return null;
+    }
     if (!res.ok) return null;
     const hist = (await res.json()) as Record<string, HistoryEntry>;
     return hist[promptId] ?? null;
@@ -251,7 +328,7 @@ export class ComfyClient {
         // Mirror dhee-core ComfyUIClient's cloud precedence: outputs first,
         // then /job/<id>/status, then the history_v2 status flag (covers
         // nodes like SaveAudio that may not populate outputs immediately).
-        const entry = await this.fetchHistoryEntry(promptId, opts.signal);
+        const entry = await this.fetchHistoryEntry(promptId, opts.signal, opts.requestTimeoutMs);
         if (entry) {
           if (entry.status?.status_str === 'error') {
             throw new Error(`workflow errored: ${describeError(entry)}`);
@@ -289,7 +366,7 @@ export class ComfyClient {
           }
         }
       } else {
-        const entry = await this.fetchHistoryEntry(promptId, opts.signal);
+        const entry = await this.fetchHistoryEntry(promptId, opts.signal, opts.requestTimeoutMs);
         if (entry) {
           if (entry.status?.status_str === 'error') {
             throw new Error(`workflow errored: ${describeError(entry)}`);
@@ -312,7 +389,7 @@ export class ComfyClient {
       subfolder: out.subfolder ?? '',
       type: out.type || 'output',
     });
-    const res = await this.request('/view', { method: 'GET' }, params);
+    const res = await this.request('/view', { method: 'GET' }, params, TRANSFER_REQUEST_TIMEOUT_MS);
     if (!res.ok) await throwComfyHttpError(res, '/view failed');
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.byteLength === 0) throw new Error('downloaded file was empty');
