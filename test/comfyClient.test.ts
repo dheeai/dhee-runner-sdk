@@ -386,3 +386,46 @@ describe('a hung connection cannot stall the poll forever', () => {
     await expect(wait).rejects.toThrow();
   });
 });
+
+describe('local vs cloud endpoint family', () => {
+  const saved = { ...process.env };
+  afterEach(() => { process.env = { ...saved }; });
+
+  it('an explicit COMFY_MODE=local polls /history, even with a cloud API key present', async () => {
+    // The bug this pins: COMFY_CLOUD_API_KEY in .env made useBearerComfyAuth
+    // true for a local URL, isCloudComfyClient ORed it in, and every local
+    // render polled /history_v2/<id> -> 404 forever while the mp4 sat
+    // finished on the box. Measured 2026-09-02.
+    process.env['COMFY_MODE'] = 'local';
+    process.env['COMFY_CLOUD_API_KEY'] = 'ck-abc123';
+    const seen: string[] = [];
+    globalThis.fetch = vi.fn(async (url: unknown) => {
+      seen.push(String(url));
+      return new Response(
+        JSON.stringify({ p1: { status: { status_str: 'success', completed: true },
+          outputs: { '9': { images: [{ filename: 'a.mp4', subfolder: 's', type: 'output' }] } } } }),
+        { status: 200 },
+      );
+    }) as unknown as typeof globalThis.fetch;
+
+    const client = new ComfyClient('http://5090.local:9000/comfyui');
+    const outs = await client.waitForOutputs('p1', { timeoutMs: 5000, pollMs: 10 });
+    expect(outs).toHaveLength(1);
+    expect(seen.some((u) => u.includes('/history/p1'))).toBe(true);
+    expect(seen.some((u) => u.includes('/history_v2/'))).toBe(false);
+  });
+
+  it('COMFY_MODE=cloud still uses the cloud endpoints', () => {
+    process.env['COMFY_MODE'] = 'cloud';
+    process.env['COMFY_CLOUD_API_KEY'] = 'ck-abc123';
+    const client = new ComfyClient('http://anything:9000/comfyui');
+    expect((client as unknown as { useCloudPaths: boolean }).useCloudPaths).toBe(true);
+  });
+
+  it('the real Comfy Cloud host is cloud regardless of COMFY_MODE being unset', () => {
+    delete process.env['COMFY_MODE'];
+    process.env['COMFY_CLOUD_API_KEY'] = 'ck-abc123';
+    const client = new ComfyClient('https://cloud.comfy.org/api');
+    expect((client as unknown as { useCloudPaths: boolean }).useCloudPaths).toBe(true);
+  });
+});

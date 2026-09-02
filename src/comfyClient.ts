@@ -44,6 +44,12 @@ export interface RunOpts {
    * wait sitting on a socket the server has stopped serving.
    */
   requestTimeoutMs?: number;
+  /**
+   * Optional sink for wait-loop diagnostics (a poll that timed out, a poll
+   * that came back not-ok). Without this a stalled wait is completely silent,
+   * which is what made a hung connection look like a slow render.
+   */
+  log?: (message: string) => void;
   /** Optional Dhee workflow id passed through Comfy extra_data for metering. */
   workflowId?: string;
 }
@@ -217,6 +223,7 @@ export class ComfyClient {
     promptId: string,
     signal?: AbortSignal,
     requestTimeoutMs?: number,
+    log?: (message: string) => void,
   ): Promise<HistoryEntry | null> {
     const path = this.useCloudPaths ? `/history_v2/${promptId}` : `/history/${promptId}`;
     let res: Response;
@@ -227,9 +234,13 @@ export class ComfyClient {
       // iteration opens a fresh connection and usually answers immediately.
       // Only the caller's own cancellation should end the wait.
       if (signal?.aborted) throw e;
+      log?.(`comfy poll: request failed (${e instanceof Error ? e.message : String(e)}) — retrying on a new connection`);
       return null;
     }
-    if (!res.ok) return null;
+    if (!res.ok) {
+      log?.(`comfy poll: ${path} -> HTTP ${res.status} ${res.statusText} — retrying`);
+      return null;
+    }
     const hist = (await res.json()) as Record<string, HistoryEntry>;
     return hist[promptId] ?? null;
   }
@@ -328,7 +339,7 @@ export class ComfyClient {
         // Mirror dhee-core ComfyUIClient's cloud precedence: outputs first,
         // then /job/<id>/status, then the history_v2 status flag (covers
         // nodes like SaveAudio that may not populate outputs immediately).
-        const entry = await this.fetchHistoryEntry(promptId, opts.signal, opts.requestTimeoutMs);
+        const entry = await this.fetchHistoryEntry(promptId, opts.signal, opts.requestTimeoutMs, opts.log);
         if (entry) {
           if (entry.status?.status_str === 'error') {
             throw new Error(`workflow errored: ${describeError(entry)}`);
@@ -366,7 +377,7 @@ export class ComfyClient {
           }
         }
       } else {
-        const entry = await this.fetchHistoryEntry(promptId, opts.signal, opts.requestTimeoutMs);
+        const entry = await this.fetchHistoryEntry(promptId, opts.signal, opts.requestTimeoutMs, opts.log);
         if (entry) {
           if (entry.status?.status_str === 'error') {
             throw new Error(`workflow errored: ${describeError(entry)}`);
@@ -406,13 +417,29 @@ function normalizeComfyBaseUrl(value: string): string {
   return value.replace(/\/$/, '').replace(/\/api$/, '');
 }
 
+/**
+ * Which endpoint FAMILY to poll: Comfy Cloud's /history_v2 + /job/<id>, or
+ * classic local /history.
+ *
+ * `useBearerComfyAuth` is NOT a cloud signal. It answers a different question —
+ * which auth HEADER to send — and it is true precisely when a key exists and
+ * the URL is NOT the cloud host (a self-hosted endpoint behind a bearer proxy).
+ * ORing it in here meant that merely HAVING COMFY_CLOUD_API_KEY in .env forced
+ * every LOCAL render onto the cloud endpoints, where /history_v2/<id> 404s
+ * forever. The render completes on the box and the runner never sees it.
+ *
+ * Measured 2026-09-02: with COMFY_MODE=local set explicitly and a cloud key
+ * present, an H3 render against the local gateway polled
+ * /history_v2/<id> -> 404 every 1.8s until the 90-minute timeout, while the
+ * mp4 sat finished on disk. An explicit COMFY_MODE=local must win outright.
+ */
 function isCloudComfyClient(baseUrl: string, apiKey?: string): boolean {
-  const mode = (process.env['COMFY_MODE'] ?? 'local').trim();
-  return (
-    mode === 'cloud' ||
-    isComfyCloudUrl(baseUrl) ||
-    useBearerComfyAuth(baseUrl, apiKey)
-  );
+  const mode = (process.env['COMFY_MODE'] ?? '').trim().toLowerCase();
+  if (mode === 'local') return false;
+  if (mode === 'cloud') return true;
+  if (isComfyCloudUrl(baseUrl)) return true;
+  // COMFY_MODE unset: keep the original heuristic.
+  return useBearerComfyAuth(baseUrl, apiKey);
 }
 
 async function throwComfyHttpError(res: Response, label: string): Promise<never> {
